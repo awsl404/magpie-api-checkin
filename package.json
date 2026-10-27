@@ -1,0 +1,35 @@
+{
+  "name": "magpie-api-checkin",
+  "version": "0.2.0",
+  "description": "Magpie provider plugin: daily check-in for new-api / one-api / sub2api sites and any custom URL+header+body endpoint, with balance and check-in status on the Usage page",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "lib",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "checkin",
+    "签到",
+    "auto-checkin",
+    "custom-checkin",
+    "new-api",
+    "one-api",
+    "sub2api"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/auth.test.mjs test/config.test.mjs test/custom.test.mjs test/platforms.test.mjs test/plugin.test.mjs test/plugin-custom.test.mjs"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f766e'/%3E%3Cpath d='M18 33l9 9 19-20' fill='none' stroke='%23fff' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+  }
+}
