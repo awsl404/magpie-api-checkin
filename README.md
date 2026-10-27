@@ -42,7 +42,7 @@ magpie plugin add ./magpie-api-checkin
 本地开发时也可以直接指向源码目录：
 
 ```bash
-magpie plugin add "D:/AI-WorkSpace/mapgie插件开发/magpie-api-checkin"
+magpie plugin add "D:/path/to/magpie-api-checkin"
 ```
 
 加载后「插件」页会多出供应商 **API 签到**。它默认显示 **0 models** 是正常的：不填 `sk-` API Key 时它只负责签到和余额。
