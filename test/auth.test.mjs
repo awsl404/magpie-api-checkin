@@ -6,9 +6,11 @@ import {
   accountOf,
   decodeJwt,
   displayLabel,
+  isLoginCheckin,
   isCookieCredential,
   jwtExpired,
   jwtUserId,
+  loginNameOf,
   jwtUsername,
   newApiHeaders,
   normalizeBaseUrl,
@@ -169,4 +171,88 @@ test("accountOf keeps a custom endpoint config, including tokenless accounts", (
   })
   assert.equal(withToken.token, "custom-token")
   assert.equal(withToken.noToken, false)
+})
+
+test("a login-keyed account keeps its own token and never reads the key as one", () => {
+  const keyed = accountOf({
+    type: "api",
+    key: "login:user@example.com",
+    metadata: {
+      baseUrl: "https://api.example.com",
+      platform: "new-api",
+      checkinMode: "login",
+      loginUsername: "user@example.com",
+      loginPassword: "pw",
+      token: "tok-from-login",
+    },
+  })
+  // The key names the account; the token it logs in with lives in metadata.
+  assert.equal(keyed.token, "tok-from-login")
+  assert.equal(keyed.noToken, false)
+  assert.equal(keyed.checkinMode, "login")
+  assert.equal(keyed.loginCheckin.username, "user@example.com")
+  assert.equal(keyed.loginCheckin.password, "pw")
+
+  const bare = accountOf({
+    type: "api",
+    key: "login:user@example.com",
+    metadata: {
+      baseUrl: "https://api.example.com",
+      checkinMode: "login",
+      loginUsername: "user@example.com",
+      loginPassword: "pw",
+    },
+  })
+  // No token yet: the login still works and the key is not mistaken for one.
+  assert.equal(bare.token, "")
+  assert.equal(bare.noToken, true)
+  assert.equal(isLoginCheckin(bare), true)
+})
+
+test("two login-style accounts never share one key", () => {
+  const a = accountOf({
+    key: "login:a@test",
+    metadata: { checkinMode: "login", loginUsername: "a@test", loginPassword: "1" },
+  })
+  const b = accountOf({
+    key: "login:b@test",
+    metadata: { checkinMode: "login", loginUsername: "b@test", loginPassword: "2" },
+  })
+  assert.notEqual(a.loginCheckin.username, b.loginCheckin.username)
+  assert.equal(a.loginCheckin.password, "1")
+  assert.equal(b.loginCheckin.password, "2")
+})
+
+test("a login-style account signs in with its e-mail, not an OAuth handle", () => {
+  // What Magpie already stores for accounts added before login-style check-in
+  // existed: label/email hold the e-mail, username is the internal handle.
+  const account = accountOf({
+    key: "api-checkin",
+    metadata: {
+      baseUrl: "https://api.example.com",
+      platform: "new-api",
+      userId: 100001,
+      username: "github_100001",
+      label: "user@example.com",
+      email: "user@example.com · api.example.com",
+      checkinMode: "login",
+      loginPassword: "pw",
+    },
+  })
+  assert.equal(account.loginCheckin.username, "user@example.com")
+
+  // An explicitly stored login name always wins over the derived one.
+  assert.equal(
+    loginNameOf({ loginUsername: "me@x.com", label: "other@y.com", username: "h" }),
+    "me@x.com",
+  )
+  // Magpie's naming field can carry a " · host" suffix; the host is not part of
+  // the login name.
+  assert.equal(
+    loginNameOf({ email: "a@b.com · api.example.com" }),
+    "a@b.com",
+  )
+  // Nothing e-mail shaped: fall back to whatever name is there.
+  assert.equal(loginNameOf({ username: "github_1" }), "github_1")
+  assert.equal(loginNameOf({}), "")
 })
