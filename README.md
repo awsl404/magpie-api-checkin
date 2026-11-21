@@ -5,6 +5,7 @@
 - 不需要额外部署服务，也不需要自己写定时器
 - 一个插件、一个供应商卡片，可以登录任意多个站点账号
 - 内置 new-api / one-api / sub2api / sub2api Pro 适配器；其它站点可以用**自定义 URL + Header + Body** 签到
+- 有些魔改站**只在密码登录时**才发放签到额度（登录响应的 `data.checked_in`），这类站点选**登录式签到**即可，不用自己写脚本
 - 余额：new-api 按站点 `quota_per_unit` 换算成美元，sub2api 直接读 USD；自定义接口也能读任意余额字段
 - 可选：登录时一并填写站点的 `sk-` API Key，就能把这个站点当作普通模型供应商在 Magpie 里使用
 
@@ -16,6 +17,7 @@
 | sub2api（定制签到） | `GET /api/v1/user/checkin/status` + `POST /api/v1/user/checkin` | `/api/v1/auth/me` |
 | sub2api Pro | `GET /api/v1/redeem/checkin/status` + `POST /api/v1/redeem/checkin` | `/api/v1/auth/me` |
 | **自定义接口** | 自己填请求方法、URL、Header、Body；响应规则也可配置 | 可选的自定义余额地址 |
+| **登录式签到** | 没有签到接口，额度在 `POST /api/user/login` 时按 `data.checked_in` 发放 | 登录前后的 `/api/user/self` 余额差 |
 
 说明：
 
@@ -51,13 +53,14 @@ magpie plugin add "D:/path/to/magpie-api-checkin"
 
 在「插件」页的 **API 签到** 那一行点登录（或 `magpie plugin login api-checkin`），依次回答：
 
-1. **站点地址**：`https://api.example.com`（粘贴带 `/v1` 或 `/api/v1` 的地址也可以，会自动去掉）
+1. **站点地址**：`https://agentrouter.org`（粘贴带 `/v1` 或 `/api/v1` 的地址也可以，会自动去掉）
 2. **站点类型**：`自动检测` / `new-api` / `sub2api` / `sub2api Pro` / `自定义接口`
 3. **用户访问令牌 / JWT / Cookie**：见下面「怎么拿令牌」；自定义接口可以留空
 4. **账号备注（可选）**：例如 `主站-Alice`；留空会用用户名
 5. **用户 ID（可选）**：部分 one-api 分支要求 `New-API-User` 头，登录报「未提供用户 ID」时填这里
 6. **站点 API Key（可选）**：`sk-…`；只影响「能不能在 Magpie 里调用该站模型」，不影响签到
-7. 如果站点类型选了 **自定义接口**，还会继续问自定义签到和余额的字段（见下一节）
+7. **签到方式**：`标准接口`（默认）或 `登录式签到`——后者用于「额度只在密码登录时发」的魔改站，选了会再问登录邮箱/用户名和密码（见 [登录式签到](#登录式签到签到额度只在登录时发放)）
+8. 如果站点类型选了 **自定义接口**，还会继续问自定义签到和余额的字段（见下一节）
 
 内置类型在登录时会立即访问站点校验令牌，并自动识别平台（new-api / sub2api / sub2api Pro）。自定义接口不做强制探测，但会顺手尝试识别 new-api/sub2api；识别成功时账号名和余额会自动沿用，识别失败也不影响自定义签到。
 
@@ -182,6 +185,56 @@ JSON 里的普通花括号不受影响（只有 `{字母开头的名字}` 会被
 
 > 自定义配置只在登录时询问。要改 URL/Header/Body，请在该账号行用「重新登录 / Re-sign in」重新填一遍；直接改 `plugin-auth.json` 不推荐。
 
+## 登录式签到（签到额度只在登录时发放）
+
+有些 New API 魔改站不提供 `/api/user/checkin`，而是把每日额度**作为密码登录的副作用**发放：登录响应的 `data` 里带 `checked_in: true`，前端只有走一次登录才会弹「签到成功，新增额度已到账」。这类站点用「退出后重新登录」的方式签到。
+
+插件对此提供 **登录式签到** 选项：
+
+1. 添加账号时，**签到方式** 选 **登录式签到**
+2. **登录式签到：邮箱或用户名** —— 填站点登录用的**邮箱**最省事（New API 的登录接口同时接受邮箱和用户名），留空则自动取账号标签里的邮箱
+3. **登录式签到：密码** —— 站点登录密码，保存在 `plugin-auth.json` 的账号 metadata 里
+4. 访问令牌可以留空（这类站点没有可用令牌也不影响签到）；填了的话，插件会在登录前后各读一次 `/api/user/self`，用余额差算出本次奖励
+
+登录名的取值顺序：**手填的登录名 → 账号标签里的邮箱 → 账号用户名**。之所以优先邮箱，是因为这类站点常用 GitHub / LinuxDO 登录，账号里存的 `username` 是 `github_100001` 这种内部名，而用户在站点上记住的、以及顺手设置的密码都对应邮箱。
+
+每次签到的行为：
+
+- 先读 `/api/status`：站点若开着 `turnstile_check`，直接返回 `captcha`，不去试密码
+- `POST /api/user/login`，body 就是 `{username, password}`
+- 登录成功且 `data.checked_in === true` → `claimed`，奖励取登录前后余额差（换算成 USD）
+- 登录成功但 `checked_in` 不为真 → `done`（今天已经签过）
+- 密码错误 → `failed`；账号被封禁 → `ineligible`；要求人机验证 → `captcha`
+- 站点若在登录响应里换了新的 `access_token`，结果里会提示重新添加账号
+
+典型站点：`https://agentrouter.org`（Agent Router）。
+
+### 给已经添加过的账号补密码
+
+Magpie 的**添加账号**对话框只在「新加一个账号」时出现，已经加进去的账号点不进去补填 —— 所以插件带了这个脚本，不用删掉重加（重加会丢令牌）。
+
+**最省事的办法：双击 `tools\set-login.bat`。** 它会自动做完整套填空：逐个账号问密码（输入不回显、跳过按回车），写完顺手跑一次真实签到把结果显示出来。
+
+命令行用法（在插件目录下）：
+
+```bash
+# 先列出账号，看哪些还没配置
+node tools/set-login.mjs
+
+# 给某个账号补密码：交互输入，不回显；写完立刻真登录一次验证并打印签到结果
+node tools/set-login.mjs "user@example.com"
+
+# 或者一次把还没配置的账号都过一遍（双击 bat 等同于这条）
+node tools/set-login.mjs --all
+
+# 站点登录得用别的名字时（默认会优先用标签里的邮箱，通常不用管）
+node tools/set-login.mjs --as github_100001 "user@example.com"
+```
+
+脚本会先备份 `plugin-auth.json`，用填的密码真登录一次——密码错了就什么都不写；密码对了才落盘，并顺手把登录时下发的令牌、用户 ID、站点名一并更新，最后跑一次真实签到把结果打出来。密码只在那个进程的内存里出现，不打印、不写日志。
+
+改完如果 Magpie 正开着，重启一次让它重新读账号配置；然后在 **设置 → 用量 → 插件** 里把 **API 签到** 的 **Daily check-in** 打开。
+
 ## 开启自动签到（重要）
 
 Magpie 默认**不**给任何插件开启自动签到。添加账号后需要手动打开一次：
@@ -205,7 +258,7 @@ Magpie 默认**不**给任何插件开启自动签到。添加账号后需要手
 magpie accounts checkin
 ```
 
-或在账号卡片上点 **Check in now**。
+它一次跑完所有有签到能力的插件账号（名字里写的是 WorkBuddy，但插件账号同样在里面），也可以在账号卡片上点 **Check in now**。
 
 ## 结果怎么看
 
@@ -283,27 +336,44 @@ magpie plugin login api-checkin
 ## 开发与测试
 
 ```bash
-npm test        # Node >= 18，75 个测试，全部使用本地 mock，不需要网络
+npm test        # Node >= 18，89 个测试，全部使用本地 mock，不需要网络
 ```
 
 目录：
 
 ```
-index.mjs            插件入口：供应商声明、登录问题、authorize、usage、checkin、models
-lib/auth.mjs         URL 规范化、JWT、new-api/sub2api 请求头、账号标签
-lib/config.mjs       自定义接口配置：Header 解析、占位符、校验、请求构造
-lib/custom.mjs       自定义接口签到 + 余额读取 + 响应判断
-lib/http.mjs         超时/错误归一化、消息提取
-lib/messages.mjs     站点常见文案判断（已签到/验证码/权限/令牌/限流）
-lib/platforms.mjs    平台探测 + new-api / sub2api / sub2api Pro 的签到、状态、余额
-lib/results.mjs      Magpie auth.checkin 的返回形状（outcome/credit/streak/message）
-lib/values.mjs       JSON 路径、金额/连续天数提取
-test/                node:test 单元测试 + 本地 HTTP mock 端到端测试
+index.mjs              插件入口：供应商声明、登录问题、authorize、usage、checkin、models
+lib/auth.mjs           URL 规范化、JWT、new-api/sub2api 请求头、账号标签、登录式 key
+lib/config.mjs         自定义接口配置：Header 解析、占位符、校验、请求构造
+lib/custom.mjs         自定义接口签到 + 余额读取 + 响应判断
+lib/http.mjs           超时/错误归一化、消息提取
+lib/login-checkin.mjs  登录式签到：站点状态、登录、余额差算奖励、封禁/人机验证分流
+lib/messages.mjs       站点常见文案判断（已签到/验证码/权限/令牌/限流）
+lib/platforms.mjs      平台探测 + new-api / sub2api / sub2api Pro 的签到、状态、余额
+lib/results.mjs        Magpie auth.checkin 的返回形状（outcome/credit/streak/message）
+lib/values.mjs         JSON 路径、金额/连续天数提取
+test/                  node:test 单元测试 + 本地 HTTP mock 端到端测试
+tools/set-login.mjs    给已有账号补登录密码（备份、真登录校验、写完立即签一次）
+tools/fake-site.mjs    本地假站点，用来验证登录式签到链路
+tools/verify-set-login.mjs  配套断言脚本
 ```
 
 ### 已验证
 
-- 单元测试与本地 HTTP mock：75/75 通过（Node 24）
+- 单元测试与本地 HTTP mock：95/95 通过（Node 24）
+- 从 Magpie **0.1.1560** 的插件宿主代码核对了 `auth.checkin` 契约：返回 `outcome`（`claimed` / `done` / `ineligible` / `inactive` / `captcha` / `failed`）、`credit`、`streak`、`message`；Magpie 按北京日调度，并在失败后重试
+- **登录式签到**（Magpie 0.1.4656 + 本地假站点）：`tools/set-login.mjs` 写入密码 → 登录 → `checked_in: true` → 结果 `claimed`，奖励按余额差算出 `25 USD`，令牌被刷新、其他账号未受影响
+- **登录式签到的错误分支**（真实站点 `https://agentrouter.org`，new-api 二次开发）：密码错误返回 `failed: 登录失败：用户名或密码错误，或用户已被封禁`，且不写盘；该站未提供 `/api/user/checkin`（统一返回 `{"message":"无权进行此操作，权限不足","success":false}`），配置登录式签到后不再误报为可签站点
+- **邮箱或用户名均可登录**（同站）：`{"username":"<邮箱>","password":"…"}` 与 `{"username":"<站点用户名>","password":"…"}` 得到同样的鉴权响应（密码对时同样能登录），因此 `loginNameOf` 优先取邮箱
+- **Turnstile 关闭时可用令牌换取资料**：同站 `/api/status` 返回 `turnstile_check: false`，`/api/user/self` 返回的 `password` / `original_password` 均为空串，因此本插件不会因为读资料而泄露站点已保存的密码
+- 真实 Magpie **0.1.1560** + 本地 mock 的自定义站点（隔离配置目录）：
+  - `magpie accounts checkin` → `API 签到 自定义站 · 127.0.0.1 checked in today +0.2 · a 4-day streak`
+  - 同一天再次执行 → 显示 `already`，不再发 HTTP 请求
+  - `magpie quota` → `自定义接口 · 自定义站 · 127.0.0.1  subscription  $2.00 left`（自定义余额字段 ÷ 除数）
+  - 打开 `pluginCheckins["api-checkin"]` 后运行 `magpie web --gateway`，约 **105 秒**后自动签到成功，日志：`plugin check-in: 自定义站 · 127.0.0.1 +0.2, a 4-day streak`
+- 此前在真实 Magpie `0.1.1421` + 本地 mock 的 new-api 与 sub2api 站点上实测过内置站点的登录、余额、手动签到和自动签到
+- 自定义接口的 URL/Header/Body 占位符、奖励/余额字段与除数、检测到 new-api 后继续用自定义路径签到，均有插件级 mock 覆盖
+
 - 从 Magpie **0.1.1560** 的插件宿主代码核对了 `auth.checkin` 契约：返回 `outcome`（`claimed` / `done` / `ineligible` / `inactive` / `captcha` / `failed`）、`credit`、`streak`、`message`；Magpie 按北京日调度，并在失败后重试
 - 真实 Magpie **0.1.1560** + 本地 mock 的自定义站点（隔离配置目录）：
   - `magpie accounts checkin` → `API 签到 自定义站 · 127.0.0.1 checked in today +0.2 · a 4-day streak`

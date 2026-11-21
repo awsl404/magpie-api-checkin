@@ -10,6 +10,7 @@
 // the Auto check-in switch.
 
 import {
+  LOGIN_KEY_PREFIX,
   NO_TOKEN_KEY,
   PLATFORM_LABELS,
   accountOf,
@@ -23,6 +24,7 @@ import {
 import { validateCustomConfig } from "./lib/config.mjs"
 import { finiteNumber, nonEmptyString } from "./lib/http.mjs"
 import { PlatformError, checkinOf, detectPlatform, listModelIds, profileOf } from "./lib/platforms.mjs"
+import { loginProfile } from "./lib/login-checkin.mjs"
 import { looseNumber } from "./lib/values.mjs"
 
 const PROVIDER = "api-checkin"
@@ -35,6 +37,7 @@ const CHAT_SDK = "@ai-sdk/openai-compatible"
 // platform. Magpie's prompt `when` is a plain equality check on an earlier
 // answer (see the plugin docs' `when: { key, op, value }`).
 const CUSTOM_WHEN = { key: "platform", op: "eq", value: "custom" }
+const LOGIN_WHEN = { key: "checkinMode", op: "eq", value: "login" }
 
 function positiveDivisor(value) {
   const text = nonEmptyString(value)
@@ -93,6 +96,38 @@ const PROMPTS = [
     key: "apiKey",
     message: "站点 API Key（可选）",
     placeholder: "sk-…；填写后可在 magpie 中直接使用该站模型",
+  },
+  {
+    type: "select",
+    key: "checkinMode",
+    message: "签到方式",
+    options: [
+      {
+        label: "标准接口（默认）",
+        value: "",
+        hint: "调用 /api/user/checkin 等接口",
+      },
+      {
+        label: "登录式签到",
+        value: "login",
+        hint: "站点在密码登录时才发放签到额度（如 api.example.com）",
+      },
+    ],
+  },
+  {
+    type: "text",
+    key: "loginUsername",
+    message: "登录式签到：邮箱或用户名",
+    placeholder: "站点登录用的邮箱（推荐）或用户名；留空则用上面的标签",
+    when: LOGIN_WHEN,
+  },
+  {
+    type: "password",
+    key: "loginPassword",
+    message: "登录式签到：密码",
+    placeholder: "站点登录密码；保存在 Magpie 的 plugin-auth.json 中",
+    when: LOGIN_WHEN,
+    validate: (value) => (nonEmptyString(value) ? undefined : "登录式签到需要填写密码"),
   },
   {
     type: "select",
@@ -330,6 +365,83 @@ const server = async ({ client } = {}, _options = {}) => {
               return { type: "success", key: token || NO_TOKEN_KEY, metadata }
             }
 
+            // Login-style check-in: the credential that matters is the
+            // password, not a token, so a site with no token still works.
+            if (nonEmptyString(inputs.checkinMode) === "login") {
+              // New API accepts either the account name or its e-mail here; the
+              // label Magpie shows is normally the e-mail, so it is the fallback.
+              const loginUsername =
+                nonEmptyString(inputs.loginUsername) || nonEmptyString(inputs.label)
+              const loginPassword = nonEmptyString(inputs.loginPassword)
+              if (!loginPassword) {
+                return { type: "failed", error: "登录式签到需要填写站点登录密码" }
+              }
+              if (!loginUsername && !token) {
+                return {
+                  type: "failed",
+                  error: "登录式签到需要填写站点登录邮箱或用户名",
+                }
+              }
+              let probed = null
+              if (!token) {
+                try {
+                  probed = await loginProfile({
+                    baseUrl,
+                    username: loginUsername,
+                    password: loginPassword,
+                  })
+                } catch (error) {
+                  return {
+                    type: "failed",
+                    error: String(error.message || error).slice(0, 500),
+                  }
+                }
+              }
+              const profile = probed?.profile
+              const userId = statedUserId ?? profile?.userId
+              const username =
+                profile?.username || loginUsername || jwtUsername(token)
+              // The e-mail is what the person recognises on such a site, and it
+              // is also what they sign in with, so it names the account unless a
+              // remark was given. Magpie shows metadata.label beside the host.
+              const remark =
+                nonEmptyString(inputs.label) ||
+                profile?.email ||
+                loginUsername ||
+                ""
+              const label = displayLabel({
+                label: remark,
+                baseUrl,
+                username,
+                userId,
+                token,
+              })
+              const metadata = {
+                baseUrl,
+                platform: "new-api",
+                userId,
+                username,
+                email: label,
+                label: remark,
+                siteName: profile?.siteName || "",
+                quotaPerUnit: profile?.quotaPerUnit || 500_000,
+                apiKey: nonEmptyString(inputs.apiKey),
+                checkinMode: "login",
+                loginUsername: loginUsername || username,
+                loginPassword,
+                // The site hands out a token at login; keep it so the usage
+                // window still reads this account's balance.
+                token: probed?.token || token || "",
+                detectedAt: new Date().toISOString(),
+              }
+              await toast(`${label} 已添加（登录式签到）`, "info")
+              // A login-style account may have no token at all, and several of
+              // them would otherwise share one key and overwrite each other, so
+              // the key falls back to the login name that makes them distinct.
+              const loginKey = `${LOGIN_KEY_PREFIX}${metadata.loginUsername || username || baseUrl}`
+              return { type: "success", key: token || loginKey, metadata }
+            }
+
             if (!token) return { type: "failed", error: "请粘贴站点访问令牌" }
             let userId
             try {
@@ -398,6 +510,9 @@ const server = async ({ client } = {}, _options = {}) => {
           return { plan, error: "账号缺少站点地址，请重新登录", windows: [] }
         }
         if (account.platform !== "custom" && !account.token) {
+          // A login-style account checks in with its password, so a missing
+          // token only costs the balance line, not the check-in.
+          if (account.checkinMode === "login") return { plan, windows: [] }
           return { plan, error: "账号缺少访问令牌，请重新登录", windows: [] }
         }
         try {

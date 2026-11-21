@@ -50,8 +50,18 @@ test("the manifest declares one keyless sign-in with the site questions", async 
   assert.equal(method.type, "api")
   assert.equal(method.keyless, true)
   const keys = method.prompts.map((p) => p.key)
-  assert.deepEqual(keys.slice(0, 6), ["url", "platform", "token", "label", "userId", "apiKey"])
-  assert.deepEqual(keys.slice(6), [
+  assert.deepEqual(keys.slice(0, 9), [
+    "url",
+    "platform",
+    "token",
+    "label",
+    "userId",
+    "apiKey",
+    "checkinMode",
+    "loginUsername",
+    "loginPassword",
+  ])
+  assert.deepEqual(keys.slice(9), [
     "customMethod",
     "customUrl",
     "customHeaders",
@@ -67,9 +77,17 @@ test("the manifest declares one keyless sign-in with the site questions", async 
   ])
   const platform = method.prompts.find((p) => p.key === "platform")
   assert.ok(platform.options.some((option) => option.value === "custom"))
+  const checkinMode = method.prompts.find((p) => p.key === "checkinMode")
+  assert.ok(checkinMode.options.some((option) => option.value === "login"))
+  // Custom questions belong to the custom platform; the login questions belong
+  // to the login check-in mode. Anything else is always asked.
   for (const prompt of method.prompts) {
     if (!prompt.when) continue
-    assert.deepEqual(prompt.when, { key: "platform", op: "eq", value: "custom" })
+    const expected =
+      prompt.key === "loginUsername" || prompt.key === "loginPassword"
+        ? { key: "checkinMode", op: "eq", value: "login" }
+        : { key: "platform", op: "eq", value: "custom" }
+    assert.deepEqual(prompt.when, expected)
   }
   assert.equal(typeof method.authorize, "function")
   assert.equal(typeof hooks.auth.usage, "function")
@@ -135,6 +153,96 @@ test("authorize rejects an unknown platform", async () => {
   })
   assert.equal(result.type, "failed")
   assert.match(result.error, /未知的站点类型/)
+})
+
+test("a login-style sign-in names the account after the e-mail and keys it apart", async () => {
+  const logins = []
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1")
+    const send = (body) => {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify(body))
+    }
+    if (url.pathname === "/api/status") {
+      return send({
+        data: { system_name: "Example Site", quota_per_unit: 500_000, turnstile_check: false },
+      })
+    }
+    if (url.pathname === "/api/user/self") {
+      return send({ success: true, data: { id: 100001, quota: 1_000_000 } })
+    }
+    if (req.method === "POST" && url.pathname === "/api/user/login") {
+      let raw = ""
+      req.on("data", (chunk) => (raw += chunk))
+      req.on("end", () => {
+        const body = JSON.parse(raw || "{}")
+        logins.push(body.username)
+        if (body.password !== "pw") {
+          return send({ success: false, message: "用户名或密码错误，或用户已被封禁" })
+        }
+        send({
+          success: true,
+          data: {
+            id: 100001,
+            username: "github_100001",
+            email: "user@example.com",
+            quota: 1_000_000,
+            access_token: "tok-fresh",
+            checked_in: true,
+          },
+        })
+      })
+      return
+    }
+    res.writeHead(404)
+    res.end("{}")
+  })
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const base = `http://127.0.0.1:${server.address().port}`
+  try {
+    const hooks = await createPlugin({ client: {} }, {})
+    // The least a person has to fill in: an e-mail, a password, and the mode.
+    const result = await hooks.auth.methods[0].authorize({
+      url: base,
+      platform: "new-api",
+      checkinMode: "login",
+      loginUsername: "user@example.com",
+      loginPassword: "pw",
+    })
+    assert.equal(result.type, "success")
+    assert.deepEqual(logins, ["user@example.com"])
+    // No remark given: the e-mail the site reports names the account.
+    assert.equal(result.metadata.label, "user@example.com")
+    assert.match(result.metadata.email, /^user\@example\.com · 127\.0\.0\.1/)
+    assert.equal(result.metadata.loginUsername, "user@example.com")
+    // The token from the login is kept so the usage window still reads it.
+    assert.equal(result.metadata.token, "tok-fresh")
+    // A keyless login-style account is keyed apart from every other one.
+    assert.match(result.key, /^login:user\@example\.com$/)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test("a login-style sign-in refuses to guess when no name is available", async () => {
+  const hooks = await createPlugin({ client: {} }, {})
+  const noPassword = await hooks.auth.methods[0].authorize({
+    url: "https://api.example.com",
+    platform: "new-api",
+    checkinMode: "login",
+    loginUsername: "me@example.com",
+  })
+  assert.equal(noPassword.type, "failed")
+  assert.match(noPassword.error, /密码/)
+
+  const noName = await hooks.auth.methods[0].authorize({
+    url: "https://api.example.com",
+    platform: "new-api",
+    checkinMode: "login",
+    loginPassword: "pw",
+  })
+  assert.equal(noName.type, "failed")
+  assert.match(noName.error, /邮箱或用户名/)
 })
 
 test("usage and checkin work from the saved sign-in", async () => {
