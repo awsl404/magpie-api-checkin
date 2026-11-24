@@ -7,6 +7,7 @@
 - 内置 new-api / one-api / sub2api / sub2api Pro 适配器；其它站点可以用**自定义 URL + Header + Body** 签到
 - 余额：new-api 按站点 `quota_per_unit` 换算成美元，sub2api 直接读 USD；自定义接口也能读任意余额字段
 - 可选：登录时一并填写站点的 `sk-` API Key，就能把这个站点当作普通模型供应商在 Magpie 里使用
+- 账号失效重新登录时，可沿用上次的 URL / Header / Body，只更新令牌或直接沿用全部配置
 
 ## 支持的站点
 
@@ -26,6 +27,7 @@
 ## 环境要求
 
 - Magpie **0.1.1421 或更新**（插件签到钩子 `auth.checkin` 在 2026-10-06 加入；0.1.1560 上已核对返回契约）。
+- 重新登录沿用需要 Magpie 支持插件方法的 `ask` 流程（0.1.4685 已实测；旧版会自动回落到原来的逐项提问）。
 - 不需要 Node/npm；Magpie 自带 Bun 运行插件。仓库里的 `node --test` 只用于开发测试。
 
 ## 安装
@@ -232,11 +234,33 @@ magpie accounts checkin
 - `inactive` → 站点没开签到/没有该接口
 - `failed: 自定义签到接口不存在（HTTP 404）…` → 自定义 URL 填错了，重新登录改地址
 
+## 账号失效 / 重新登录（自动沿用上次配置）
+
+账号令牌过期、界面显示「重新登录 / Re-sign in」时，不需要把站点地址、平台、Header、Body 再填一遍。插件在登录开始时读取 Magpie 的 `plugin-auth.json` 中**本插件自己的账号**（`api-checkin` / `api-checkin#...`），然后问：
+
+1. **要沿用哪个账号的配置？**
+   - 选择一个已有账号，例如 `alice · api.example.com`
+   - 或「重新填写全部」新增账号 / 彻底改配置
+2. **要怎样沿用？**
+   - **只更新访问令牌（推荐）**：URL、平台、Header、Body、备注、用户 ID、API Key 全部保留，只问新令牌。令牌留空则继续使用上次的令牌。
+   - **沿用上次令牌，重新填写请求配置**：URL、平台、Header、Body 等可以改，令牌保留；留空的项继续使用上次的值。
+   - **完全沿用上次配置（包括令牌）**：不再提问，直接用上次的配置重新登录；适合账号没失效、只是想重新登录。
+   - **重新填写全部**：回到逐项提问。
+
+沿用后会保持原账号名（备注/用户名 · 域名），所以是**覆盖原账号**，不会多出一条重复账号。重新登录成功时 `key` 与 `metadata.token` 会一起更新。
+
+说明：
+
+- 账号必须还在 `plugin-auth.json` 里。如果已经「退出登录 / Sign out」或删除，就没有可沿用的配置，只能重新填写。
+- 插件只读取 `api-checkin` / `api-checkin#...` 条目，不读取其他供应商；不会把令牌复制到新文件，也不会发往任何第三方。
+- 该功能需要 Magpie 支持插件方法的 `ask` 流程（0.1.4685 已实测）。旧版本 Magpie 会自动回落到原来的逐项提问。
+- 命令行同样可用：`magpie plugin login api-checkin` 会显示同样的选择。
+
 ## 多账号 / 多站点
 
 重复「添加站点账号」即可。每个账号名由「备注（或用户名）· 站点域名」组成，方便区分。同一个站点多个账号、不同站点混用都没问题。
 
-要**更新某个账号的令牌或自定义配置**，请在该账号行用「重新登录 / Re-sign in」，不要重新添加，否则可能出现两条同名或重复的记录。Magpie 没有直接编辑令牌的表单：令牌属于登录凭据，只能通过重新登录替换。找不到「重新登录」时，先「退出登录 / Sign out」再重新添加同一站点也可以。
+要**更新某个账号的令牌或自定义配置**，请在该账号行用「重新登录 / Re-sign in」，不要重新添加，否则可能出现两条同名或重复的记录。重新登录时插件会先提供「沿用上次配置」：通常只需要选择「只更新访问令牌」，或直接「完全沿用」；要彻底改配置再选「重新填写全部」。Magpie 没有直接编辑令牌的表单：令牌属于登录凭据，只能通过重新登录替换。找不到「重新登录」时，先「退出登录 / Sign out」再重新添加同一站点也可以。
 
 命令行等价做法（备注填成和原账号一样，会替换而不是新增）：
 
@@ -269,6 +293,9 @@ magpie plugin login api-checkin
 | 自动签到没发生 | 确认 **设置 → 用量 → 插件** 里的 Daily check-in 已打开；多账号时确认该账号自己的开关也是 On；确认 Magpie 在运行；首次检查在启动约 2 分钟后 |
 | 余额显示 `—` 或为空 | 内置站点看 `/api/user/self`、`/api/v1/auth/me` 是否返回余额；自定义接口检查「余额地址」「余额字段」「余额换算除数」 |
 | 自定义配置改了没生效 | 重新登录该账号；配置保存在账号 metadata 里，只在登录时写入 |
+| 重新登录没有出现「沿用上次配置」 | 账号已经被「退出登录」或删除，或 Magpie 版本太旧不支持 `ask`；选择「重新填写全部」，或升级 Magpie |
+| 沿用上次配置失败，提示令牌可能失效 | 重新登录，选择「只更新访问令牌」，填入新令牌 |
+| 重新登录后多出一个账号 | 重新登录时备注填了新的。用原来的备注/用户名重新登录以覆盖原账号，或退出多余的那个 |
 | 供应商显示 0 models | 正常。只有填写 `sk-` API Key 的账号才会列模型 |
 | 升级 Magpie 后卡片没有签到行 | 需要支持 `auth.checkin` 的版本（0.1.1421+） |
 
@@ -277,19 +304,20 @@ magpie plugin login api-checkin
 - 访问令牌保存在 Magpie 的 `plugin-auth.json`（Unix 权限 600），签到结果在 `plugin-checkin.json`；插件不会把数据发往任何第三方，所有请求都直接发给你填写的站点。
 - 自定义请求头和请求体也会写进账号 metadata（同一个文件）。不要把 `plugin-auth.json` 或包含令牌的截图发给别人。
 - 自定义接口允许把请求发到另一个域名（例如余额接口），请只填你信任的地址。
-- 由于 Magpie 的插件登录会把问题答案一并写进账号 `metadata`，令牌在 `plugin-auth.json` 里会出现两份（`key` 与 `metadata.token`），但都在同一个权限受控的文件里。
+- 由于 Magpie 的插件登录会把问题答案一并写进账号 `metadata`，令牌在 `plugin-auth.json` 里会出现两份（`key` 与 `metadata.token`），但都在同一个权限受控的文件里。重新登录时插件会让两者一起更新。
+- 重新登录时，插件只读取 `plugin-auth.json` 中 `api-checkin` / `api-checkin#...` 的条目，用来提供「沿用上次配置」选项；不会把令牌复制到新文件，也不会发往任何第三方。
 - 插件没有窗口页面，也不需要页面读取权限：站点的签到状态和按钮都在 Magpie 自带的用量页面里。
 
 ## 开发与测试
 
 ```bash
-npm test        # Node >= 18，75 个测试，全部使用本地 mock，不需要网络
+npm test        # Node >= 18，85 个测试，全部使用本地 mock，不需要网络
 ```
 
 目录：
 
 ```
-index.mjs            插件入口：供应商声明、登录问题、authorize、usage、checkin、models
+index.mjs            插件入口：供应商声明、登录问题、ask 沿用流程、authorize、usage、checkin、models
 lib/auth.mjs         URL 规范化、JWT、new-api/sub2api 请求头、账号标签
 lib/config.mjs       自定义接口配置：Header 解析、占位符、校验、请求构造
 lib/custom.mjs       自定义接口签到 + 余额读取 + 响应判断
@@ -297,14 +325,21 @@ lib/http.mjs         超时/错误归一化、消息提取
 lib/messages.mjs     站点常见文案判断（已签到/验证码/权限/令牌/限流）
 lib/platforms.mjs    平台探测 + new-api / sub2api / sub2api Pro 的签到、状态、余额
 lib/results.mjs      Magpie auth.checkin 的返回形状（outcome/credit/streak/message）
+lib/saved.mjs        从 plugin-auth.json 读取本插件账号，供重新登录沿用
 lib/values.mjs       JSON 路径、金额/连续天数提取
 test/                node:test 单元测试 + 本地 HTTP mock 端到端测试
+CHANGELOG.md         各版本更新记录
 ```
 
 ### 已验证
 
-- 单元测试与本地 HTTP mock：75/75 通过（Node 24）
+- 单元测试与本地 HTTP mock：85/85 通过（Node 24）
 - 从 Magpie **0.1.1560** 的插件宿主代码核对了 `auth.checkin` 契约：返回 `outcome`（`claimed` / `done` / `ineligible` / `inactive` / `captcha` / `failed`）、`credit`、`streak`、`message`；Magpie 按北京日调度，并在失败后重试
+- 真实 Magpie **0.1.4685** + 本地 mock 站点（隔离配置目录）验证重新登录沿用：
+  - `magpie plugin login api-checkin` 首先显示「检测到之前登录过的 API 签到账号，要沿用上次配置吗？」
+  - 「只更新访问令牌」→ 输入新令牌后登录成功，请求使用 `Bearer new-token`，`key` 与 `metadata.token` 都是新令牌，仍然只有一个账号
+  - 「完全沿用上次配置（包括令牌）」→ 不再询问令牌，直接用旧令牌登录成功
+  - 「沿用上次令牌，重新填写请求配置」→ URL 留空、平台选「保持上次」、其余留空，直接登录成功，请求仍使用旧令牌
 - 真实 Magpie **0.1.1560** + 本地 mock 的自定义站点（隔离配置目录）：
   - `magpie accounts checkin` → `API 签到 自定义站 · 127.0.0.1 checked in today +0.2 · a 4-day streak`
   - 同一天再次执行 → 显示 `already`，不再发 HTTP 请求
@@ -312,6 +347,10 @@ test/                node:test 单元测试 + 本地 HTTP mock 端到端测试
   - 打开 `pluginCheckins["api-checkin"]` 后运行 `magpie web --gateway`，约 **105 秒**后自动签到成功，日志：`plugin check-in: 自定义站 · 127.0.0.1 +0.2, a 4-day streak`
 - 此前在真实 Magpie `0.1.1421` + 本地 mock 的 new-api 与 sub2api 站点上实测过内置站点的登录、余额、手动签到和自动签到
 - 自定义接口的 URL/Header/Body 占位符、奖励/余额字段与除数、检测到 new-api 后继续用自定义路径签到，均有插件级 mock 覆盖
+
+## 更新记录
+
+各版本的完整更新列表见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 发布
 

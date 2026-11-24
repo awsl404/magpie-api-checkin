@@ -72,6 +72,7 @@ test("the manifest declares one keyless sign-in with the site questions", async 
     assert.deepEqual(prompt.when, { key: "platform", op: "eq", value: "custom" })
   }
   assert.equal(typeof method.authorize, "function")
+  assert.equal(typeof method.ask, "function")
   assert.equal(typeof hooks.auth.usage, "function")
   assert.equal(typeof hooks.auth.checkin, "function")
   assert.equal(typeof hooks.auth.loader, "function")
