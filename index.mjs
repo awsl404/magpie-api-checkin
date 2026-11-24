@@ -211,6 +211,7 @@ const PROMPTS = [
 // questions come first and let an expired account keep its URL, platform,
 // headers and body. The token is the only thing an expired account is
 // usually missing.
+const REUSE_ACTION = "_reuse_action"
 const REUSE_ACCOUNT = "_reuse_account"
 const REUSE_MODE = "_reuse_mode"
 
@@ -256,6 +257,62 @@ function nextPlainPrompt(inputs, options = {}) {
   return null
 }
 
+/** A select's "keep the saved value" button, first so it is the default. */
+function withKeepOption(prompt, saved) {
+  if (!prompt) return null
+  if (prompt.key === "platform" && saved.platform) {
+    prompt.options = [
+      {
+        label: `保持上次（${PLATFORM_LABELS[saved.platform] || saved.platform}）`,
+        value: saved.platform,
+        hint: "沿用上次的站点类型",
+      },
+      ...prompt.options.filter((option) => option.value !== saved.platform),
+    ]
+  }
+  if (prompt.key === "customMethod" && saved.customMethod) {
+    prompt.options = [
+      {
+        label: `保持上次（${saved.customMethod}）`,
+        value: saved.customMethod,
+        hint: "沿用上次的请求方法",
+      },
+      ...prompt.options.filter((option) => option.value !== saved.customMethod),
+    ]
+  }
+  return prompt
+}
+
+// The placeholders show what is saved; an empty answer keeps it. Headers and
+// bodies say so instead of printing a value that may hold a secret.
+function savedPlaceholders(saved, withToken = false) {
+  const placeholders = {
+    url: saved.url,
+    label: saved.label,
+    userId: saved.userId,
+    apiKey: saved.apiKey ? maskToken(saved.apiKey) : "",
+    customUrl: saved.customUrl,
+    customHeaders: saved.customHeaders
+      ? "留空沿用上次的请求头；要修改请粘贴完整的新值"
+      : "",
+    customBody: saved.customBody ? "留空沿用上次的请求体；要修改请粘贴完整的新值" : "",
+    customSuccess: saved.customSuccess,
+    customAlready: saved.customAlready,
+    customCreditField: saved.customCreditField,
+    customCreditDivisor: saved.customCreditDivisor,
+    customStreakField: saved.customStreakField,
+    customBalanceUrl: saved.customBalanceUrl,
+    customBalanceField: saved.customBalanceField,
+    customBalanceDivisor: saved.customBalanceDivisor,
+  }
+  if (withToken) {
+    placeholders.token = saved.token
+      ? `上次的令牌 ${maskToken(saved.token)}；留空沿用，要换就粘贴新令牌`
+      : ""
+  }
+  return placeholders
+}
+
 async function nextReusePrompt(inputs) {
   let accounts
   try {
@@ -265,11 +322,36 @@ async function nextReusePrompt(inputs) {
   }
   if (!accounts.length) return nextPlainPrompt(inputs)
 
+  // Magpie does not tell a plugin whether the user pressed "add" or
+  // "re-login", so new accounts come first and no saved site is shown
+  // until the user explicitly asks to re-login one.
+  if (!(REUSE_ACTION in inputs)) {
+    return {
+      type: "select",
+      key: REUSE_ACTION,
+      message: "要新增账号，还是重新登录已有账号？",
+      placeholder: "",
+      options: [
+        {
+          label: "添加新账号（默认）",
+          value: "new",
+          hint: "从站点地址开始填写；不显示已有站点",
+        },
+        {
+          label: "重新登录已有账号",
+          value: "reuse",
+          hint: "选择已有账号，沿用它上次的 URL、Header、Body 等配置",
+        },
+      ],
+    }
+  }
+  if (inputs[REUSE_ACTION] !== "reuse") return nextPlainPrompt(inputs)
+
   if (!(REUSE_ACCOUNT in inputs)) {
     return {
       type: "select",
       key: REUSE_ACCOUNT,
-      message: "检测到之前登录过的 API 签到账号，要沿用上次配置吗？",
+      message: "要沿用哪个账号的配置？",
       placeholder: "",
       options: [
         ...accounts.slice(0, 10).map((account) => ({
@@ -277,7 +359,7 @@ async function nextReusePrompt(inputs) {
           value: account.sourceKey,
           hint: savedAccountHint(account),
         })),
-        { label: "重新填写全部", value: "new", hint: "新增账号，或逐项修改配置" },
+        { label: "重新填写全部", value: "new", hint: "不沿用，逐项重新填写" },
       ],
     }
   }
@@ -294,73 +376,46 @@ async function nextReusePrompt(inputs) {
       placeholder: "",
       options: [
         {
-          label: "只更新访问令牌（推荐）",
-          value: "token",
-          hint: "URL、平台、Header、Body、备注、用户 ID 等全部保留",
+          label: "逐项确认/修改全部（预填上次值）",
+          value: "edit",
+          hint: "URL、令牌、API Key、Header、Body 等全部显示；留空沿用",
         },
         {
-          label: "沿用上次令牌，重新填写请求配置",
+          label: "只更新访问令牌",
+          value: "token",
+          hint: "只问新令牌，其余全部保留",
+        },
+        {
+          label: "沿用上次令牌，只改请求配置",
           value: "request",
           hint: "URL、平台、Header、Body 等可以改；令牌保留",
         },
         {
-          label: "完全沿用上次配置（包括令牌）",
+          label: "完全沿用（包括令牌）",
           value: "all",
-          hint: "账号没有失效，只是想重新登录时选这个",
+          hint: "不再提问，直接用上次配置登录",
         },
-        { label: "重新填写全部", value: "new", hint: "逐项重新填写" },
+        { label: "重新填写全部", value: "new", hint: "不沿用，逐项重新填写" },
       ],
     }
   }
 
-  if (inputs[REUSE_MODE] === "request") {
-    const saved = inputsFromSaved(account)
-    const placeholders = {
-      url: saved.url,
-      label: saved.label,
-      userId: saved.userId,
-      apiKey: saved.apiKey ? maskToken(saved.apiKey) : "",
-      customUrl: saved.customUrl,
-      customHeaders: saved.customHeaders
-        ? "留空沿用上次的请求头；要修改请粘贴完整的新值"
-        : "",
-      customBody: saved.customBody ? "留空沿用上次的请求体；要修改请粘贴完整的新值" : "",
-      customSuccess: saved.customSuccess,
-      customAlready: saved.customAlready,
-      customCreditField: saved.customCreditField,
-      customCreditDivisor: saved.customCreditDivisor,
-      customStreakField: saved.customStreakField,
-      customBalanceUrl: saved.customBalanceUrl,
-      customBalanceField: saved.customBalanceField,
-      customBalanceDivisor: saved.customBalanceDivisor,
-    }
-    const next = nextPlainPrompt(inputs, { skip: new Set(["token"]), placeholders })
-    if (!next) return null
-    // The two choices are selects: a "keep last" button saves a click and
-    // makes it obvious that the old value is still there.
-    if (next.key === "platform" && saved.platform) {
-      next.options = [
-        {
-          label: `保持上次（${PLATFORM_LABELS[saved.platform] || saved.platform}）`,
-          value: saved.platform,
-          hint: "沿用上次的站点类型",
-        },
-        ...next.options.filter((option) => option.value !== saved.platform),
-      ]
-    }
-    if (next.key === "customMethod" && saved.customMethod) {
-      next.options = [
-        {
-          label: `保持上次（${saved.customMethod}）`,
-          value: saved.customMethod,
-          hint: "沿用上次的请求方法",
-        },
-        ...next.options.filter((option) => option.value !== saved.customMethod),
-      ]
-    }
-    return next
+  const saved = inputsFromSaved(account)
+  if (inputs[REUSE_MODE] === "edit") {
+    return withKeepOption(
+      nextPlainPrompt(inputs, { placeholders: savedPlaceholders(saved, true) }),
+      saved,
+    )
   }
-
+  if (inputs[REUSE_MODE] === "request") {
+    return withKeepOption(
+      nextPlainPrompt(inputs, {
+        skip: new Set(["token"]),
+        placeholders: savedPlaceholders(saved),
+      }),
+      saved,
+    )
+  }
   if (inputs[REUSE_MODE] === "token") {
     if ("token" in inputs) return null
     return {
@@ -377,12 +432,15 @@ async function nextReusePrompt(inputs) {
 }
 
 /**
- * The answers an "all"/"token" re-login stands for. Loading fails closed:
- * a chosen account that can no longer be read asks the user to refill.
+ * The answers a re-login stands for. Only a reuse chosen at the first
+ * question is resolved; adding a new account never touches saved entries.
  */
 async function resolveReuseInputs(inputs) {
+  if (inputs[REUSE_ACTION] !== "reuse") return { inputs }
   const mode = inputs[REUSE_MODE]
-  if (mode !== "all" && mode !== "token" && mode !== "request") return { inputs }
+  if (mode !== "all" && mode !== "token" && mode !== "request" && mode !== "edit") {
+    return { inputs }
+  }
   let accounts
   try {
     accounts = await savedApiCheckinAccounts()
@@ -394,16 +452,17 @@ async function resolveReuseInputs(inputs) {
     return { error: "无法读取上次的账号配置：请重新登录并选择「重新填写全部」" }
   }
   const saved = inputsFromSaved(account)
-  if (mode === "request") {
-    // Blank answers keep the saved value; typed answers replace it. The
-    // token is not asked in this mode, so it always comes from the save.
+  if (mode === "edit" || mode === "request") {
+    // Blank answers keep the saved value; typed answers replace it.
     const provided = {}
     for (const [key, value] of Object.entries(inputs)) {
       if (key.startsWith("_")) continue
       if (typeof value !== "string" || value.trim() === "") continue
       provided[key] = value
     }
-    return { inputs: { ...saved, ...provided, token: saved.token }, reused: true, mode }
+    const token =
+      mode === "edit" ? nonEmptyString(inputs.token) || saved.token : saved.token
+    return { inputs: { ...saved, ...provided, token }, reused: true, mode }
   }
   const token = mode === "token" ? nonEmptyString(inputs.token) || saved.token : saved.token
   return { inputs: { ...saved, token }, reused: true, mode }
@@ -417,6 +476,14 @@ function userIdOf(input, fallback) {
     throw new Error("用户 ID 必须是正整数")
   }
   return n
+}
+
+/** A stated user id that the token's own profile contradicts. */
+function userIdMismatch(stated, actual) {
+  const tokenUserId = finiteNumber(actual)
+  if (stated === undefined || tokenUserId === undefined || tokenUserId <= 0) return ""
+  if (Math.trunc(tokenUserId) === stated) return ""
+  return `用户 ID 与令牌不匹配：令牌属于 #${Math.trunc(tokenUserId)}，你填写的是 #${stated}。一个站点多个用户时，请为每个账号使用各自的令牌和用户 ID。`
 }
 
 function modelEntry(id, baseUrl) {
@@ -542,6 +609,8 @@ const server = async ({ client } = {}, _options = {}) => {
                 }
               }
               const profile = detected?.profile
+              const mismatch = userIdMismatch(statedUserId, profile?.userId)
+              if (mismatch) return { type: "failed", error: mismatch }
               const userId = statedUserId ?? profile?.userId ?? jwtUserId(token)
               const username = profile?.username || jwtUsername(token)
               const label = displayLabel({
@@ -609,6 +678,8 @@ const server = async ({ client } = {}, _options = {}) => {
               return { type: "failed", error: `${String(error.message || error).slice(0, 500)}${hint}` }
             }
             const profile = found.profile
+            const mismatch = userIdMismatch(statedUserId, profile.userId)
+            if (mismatch) return { type: "failed", error: mismatch }
             const label = displayLabel({
               label: inputs.label,
               baseUrl,

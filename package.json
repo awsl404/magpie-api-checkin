@@ -1,6 +1,6 @@
 {
   "name": "magpie-api-checkin",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Magpie provider plugin: daily check-in for new-api / one-api / sub2api sites and any custom URL+header+body endpoint, with balance, check-in status and re-login reuse on the Usage page",
   "type": "module",
   "main": "./index.mjs",
